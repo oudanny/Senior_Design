@@ -1,10 +1,12 @@
 import seaborn as sns
 import pandas as pd
+import os
 import matplotlib.pyplot as plt
 
 # -------------------------------------------------
 # Load data
 # -------------------------------------------------
+os.chdir('/workspaces/Senior_Design/')
 
 cum_df = pd.read_csv(r'/workspaces/Senior_Design/forecasting/monthly_cumulative_volumes.csv')
 rate_df = pd.read_csv(r'/workspaces/Senior_Design/forecasting/norm_monthly_rates.csv')
