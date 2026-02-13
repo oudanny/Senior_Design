@@ -3,10 +3,8 @@ import pandas as pd
 # -------------------------------------------------
 # Load data
 # -------------------------------------------------
-# df = pd.read_csv('./forecasting/normalized-TF-prod_csv.csv')
 df = pd.read_csv('./forecasting/wolfcamp_bupper_prod_norm.csv')
 
-# Columns with quarterly cumulative data
 columns_to_convert = [
     'Norm. Cum. Water 3mo (bbl)', 'Norm. Cum. Water 6mo (bbl)',
     'Norm. Cum. Water 9mo (bbl)', 'Norm. Cum. Water 12mo (bbl)',
@@ -18,13 +16,10 @@ columns_to_convert = [
 
 df = df[['WellName', 'FirstProdDate'] + columns_to_convert]
 
-# -------------------------------------------------
-# Parse dates
-# -------------------------------------------------
 df['FirstProdDate'] = pd.to_datetime(df['FirstProdDate'])
 
 # -------------------------------------------------
-# Wide → Long (quarterly cumulative)
+# Wide → Long
 # -------------------------------------------------
 long_df = df.melt(
     id_vars=['WellName', 'FirstProdDate'],
@@ -33,21 +28,20 @@ long_df = df.melt(
     value_name='cum_prod'
 )
 
-# Drop empty cumulative values
 long_df = long_df.dropna(subset=['cum_prod'])
 
-# Ensure cumulative production is numeric (strip commas/spaces)
 long_df['cum_prod'] = (
     long_df['cum_prod']
     .astype(str)
     .str.replace(',', '', regex=False)
     .str.strip()
 )
+
 long_df['cum_prod'] = pd.to_numeric(long_df['cum_prod'], errors='coerce')
 long_df = long_df.dropna(subset=['cum_prod'])
 
 # -------------------------------------------------
-# Extract phase and months from column names
+# Extract phase + months
 # -------------------------------------------------
 long_df['phase'] = (
     long_df['metric']
@@ -60,8 +54,24 @@ long_df['months'] = (
     .astype(int)
 )
 
+long_df = long_df[['WellName','FirstProdDate','phase','months','cum_prod']]
+
 # -------------------------------------------------
-# Compute production date from FirstProdDate
+# Add Month 0 cumulative = 0
+# -------------------------------------------------
+month0 = (
+    long_df[['WellName','FirstProdDate','phase']]
+    .drop_duplicates()
+    .copy()
+)
+
+month0['months'] = 0
+month0['cum_prod'] = 0
+
+long_df = pd.concat([long_df, month0], ignore_index=True)
+
+# -------------------------------------------------
+# Compute production date
 # -------------------------------------------------
 long_df['prod_date'] = (
     long_df.apply(
@@ -70,39 +80,20 @@ long_df['prod_date'] = (
     )
 )
 
-# -------------------------------------------------
-# Keep clean quarterly cumulative table
-# -------------------------------------------------
-final_df = (
-    long_df[['WellName', 'phase', 'prod_date', 'cum_prod']]
-    .sort_values(['WellName', 'phase', 'prod_date'])
-    .reset_index(drop=True)
-)
-
-# Align to month start
-final_df['prod_date'] = (
-    final_df['prod_date']
+long_df['prod_date'] = (
+    long_df['prod_date']
     .dt.to_period('M')
     .dt.to_timestamp()
 )
 
 # -------------------------------------------------
-# Expand to monthly grid per well + phase
+# Expand to full monthly grid (0 → 12)
 # -------------------------------------------------
 def expand_monthly(group):
-    # Pandas 3+ may exclude group keys from the group frame
-    well_name = None
-    phase = None
-    if isinstance(group.name, tuple):
-        well_name, phase = group.name
-    else:
-        well_name = group.name
 
-    if 'WellName' in group.columns:
-        well_name = group['WellName'].iloc[0]
-    if 'phase' in group.columns:
-        phase = group['phase'].iloc[0]
-    
+    # Get group keys safely (works in pandas 2.2+ / 3+)
+    well_name, phase = group.name
+
     idx = pd.date_range(
         start=group['prod_date'].min(),
         end=group['prod_date'].max(),
@@ -124,60 +115,115 @@ def expand_monthly(group):
     return out
 
 
+
 monthly = (
-    final_df
+    long_df
     .groupby(['WellName', 'phase'], group_keys=False)
     .apply(expand_monthly)
 )
 
 # -------------------------------------------------
-# Interpolate monthly cumulative volumes
+# Linear interpolation (including Months 1–2)
 # -------------------------------------------------
-monthly['cum_prod'] = (
+def interpolate_group(g):
+
+    # recover group keys safely
+    well_name, phase = g.name
+
+    g = g.sort_values('prod_date').copy()
+
+    g['cum_prod'] = g['cum_prod'].interpolate(method='linear')
+
+    # restore identifiers
+    g['WellName'] = well_name
+    g['phase'] = phase
+
+    return g
+
+monthly = (
     monthly
-    .groupby(['WellName', 'phase'])['cum_prod']
-    .transform(lambda s: s.interpolate(method='linear'))
+    .groupby(['WellName','phase'], group_keys=False)
+    .apply(interpolate_group)
 )
 
-monthly = monthly.dropna(subset=['cum_prod'])
 
-# -------------------------------------------------
-# Save monthly cumulative volumes
-# -------------------------------------------------
-monthly_cum = monthly[['WellName', 'phase', 'prod_date', 'cum_prod']]
+# =================================================
+# 1️⃣ WIDE MONTHLY CUMULATIVE (Month 0–12)
+# =================================================
+monthly_cum_wide = (
+    monthly
+    .pivot_table(
+        index=['WellName', 'prod_date'],
+        columns='phase',
+        values='cum_prod'
+    )
+    .reset_index()
+)
 
-monthly_cum.to_csv(
+monthly_cum_wide.columns.name = None
+
+monthly_cum_wide = monthly_cum_wide[
+    ['WellName','prod_date','Oil','Gas','Water']
+]
+
+monthly_cum_wide[['Oil','Gas','Water']] = (
+    monthly_cum_wide[['Oil','Gas','Water']]
+    .fillna(0)
+)
+
+monthly_cum_wide.to_csv(
     './forecasting/monthly_cumulative_volumes.csv',
     index=False
 )
 
-# -------------------------------------------------
-# Convert cumulative → monthly rates
-# -------------------------------------------------
+# =================================================
+# 2️⃣ WIDE MONTHLY RATES (Month 1–12)
+# =================================================
 monthly_rate = monthly.copy()
 
 monthly_rate['monthly_rate'] = (
     monthly_rate
-    .groupby(['WellName', 'phase'])['cum_prod']
+    .groupby(['WellName','phase'])['cum_prod']
     .diff()
 )
 
 monthly_rate = monthly_rate.dropna(subset=['monthly_rate'])
 
-# Enforce non-negative rates
-monthly_rate['monthly_rate'] = monthly_rate['monthly_rate'].clip(lower=0)
+monthly_rate['monthly_rate'] = (
+    monthly_rate['monthly_rate']
+    .clip(lower=0)
+)
 
-# -------------------------------------------------
-# Save monthly rates
-# -------------------------------------------------
-monthly_rate_df = monthly_rate[
-    ['WellName', 'phase', 'prod_date', 'monthly_rate']
+monthly_rate_wide = (
+    monthly_rate
+    .pivot_table(
+        index=['WellName','prod_date'],
+        columns='phase',
+        values='monthly_rate'
+    )
+    .reset_index()
+)
+
+monthly_rate_wide.columns.name = None
+
+monthly_rate_wide = monthly_rate_wide.rename(columns={
+    'Oil': 'Oil_rate',
+    'Gas': 'Gas_rate',
+    'Water': 'Water_rate'
+})
+
+monthly_rate_wide = monthly_rate_wide[
+    ['WellName','prod_date','Oil_rate','Gas_rate','Water_rate']
 ]
 
-monthly_rate_df.to_csv(
+monthly_rate_wide[['Oil_rate','Gas_rate','Water_rate']] = (
+    monthly_rate_wide[['Oil_rate','Gas_rate','Water_rate']]
+    .fillna(0)
+)
+
+monthly_rate_wide.to_csv(
     './forecasting/norm_monthly_rates.csv',
     index=False
 )
 
-print('✔ Monthly cumulative and rate CSVs written')
-
+print('✔ Wide cumulative (0–12) and wide monthly rates (1–12) written')
