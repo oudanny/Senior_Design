@@ -14,6 +14,7 @@ def extract_code(s):
 
 csv['WellName'] = csv['WellName'].apply(extract_code)
 csv = csv.rename(columns={'WellName': 'Well'})
+# new_row = {"Well": 'Name', "prod_date": 'YYYY-MM-DD', "Oil": 'Bbl/Mo', "Gas": 'MCF/Mo', "Water": 'BBl/Mo'}
 # new_row = {"Well": 'Name', "prod_date": 'YYYY-MM-DD', "Oil_rate": 'Bbl/Mo', "Gas_rate": 'MCF/Mo', "Water_rate": 'BBl/Mo'}
 new_row = {"Well": 'Name', "prod_date": 'YYYY-MM-DD', "Oil_rate": 'STB/d', "Gas_rate": 'MCF/d', "Water_rate": 'STB/d'}
 
@@ -21,3 +22,5 @@ HM_csv = pd.concat([pd.DataFrame([new_row]), csv], ignore_index=True)
 
 
 HM_csv.to_csv('forecasting/HM_norm_daily_rates.prd', index=False)
+# HM_csv.to_csv('forecasting/HM_monthly_cumulative_volumes.prd', index=False)
+# HM_csv.to_csv('forecasting/HM_norm_monthly_rates.prd', index=False)

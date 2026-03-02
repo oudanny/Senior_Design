@@ -1,6 +1,7 @@
 import pandas as pd
 
-monthly_rate_df = pd.read_csv('forecasting/norm_monthly_rates.csv')
+# monthly_rate_df = pd.read_csv('forecasting/norm_monthly_rates.csv')
+monthly_rate_df = pd.read_csv('forecasting/wolfcamp_bupper_forecast.csv')
 
 # Find days in each month for each prod_date
 monthly_rate_df['prod_date'] = pd.to_datetime(monthly_rate_df['prod_date'])
